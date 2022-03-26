@@ -1,0 +1,2377 @@
+---
+title: "nasopharyngealmicrobiome_rscript"
+author: "RM"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(dplyr)
+library(tidyselect)
+library(phyloseq)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(tidyverse)
+library(vegan)
+library(pheatmap)
+library(corrplot)
+library(Hmisc)
+```
+
+### Load datasets and create phyloseq object:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+################# OTUs table, taxonomic file, metadata #######################
+
+otu_mat <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/modifiedname_otus.csv")
+tax_mat <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/nasal_samples_taxa.csv")
+samples_df <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/modifiedname_meta.csv")
+
+# correcting data types
+metadata <- samples_df %>% 
+  mutate(SampleNo = as.factor(SampleNo),
+         Samples = as.factor(Samples),
+         Symptoms=as.factor(Symptoms))
+summary(metadata)
+
+row.names(otu_mat) <- otu_mat$OTUS
+otumat <- otu_mat %>% select(-OTUS) 
+row.names(tax_mat) <- tax_mat$OTUS
+taxmat <- tax_mat %>% select(-OTUS) 
+row.names(samples_df) <- samples_df$Sample
+samplesdf <- samples_df %>% select(-Sample) 
+
+otumat <- as.matrix(otumat)
+taxmat <- as.matrix(taxmat)
+
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+samples <- sample_data(samplesdf)
+phyloseq <- phyloseq(OTU,TAX,samples)
+phyloseq 
+
+phy_seq1 <- phyloseq  %>%
+  subset_taxa(
+    Kingdom == "Bacteria" &
+      Family  != "mitochondria" &
+      Class   != "Chloroplast"
+  )
+
+phy_seq1
+
+
+```
+### DESeq2 Normalization:
+
+```{r,results='hide',warning=FALSE,fig.show='hide',,message=FALSE}
+library(DESeq2)
+cds = phyloseq_to_deseq2(phy_seq1, ~ Samples)
+cds
+dds <- DESeq2::DESeq(cds)
+dds
+
+results <- DESeq2::results(dds,contrast=c("Samples","Control","Infected"))
+results
+dim(results)
+
+da_otus <- subset(results) 
+
+da_otus=cbind(as(da_otus,"data.frame"),
+              as(otu_table(phy_seq1)[rownames(da_otus),],"matrix"))
+deseq_tab=cbind(as(da_otus,"data.frame"),
+               as(tax_table(phy_seq1)[rownames(da_otus),],"matrix"))
+deseq_tab
+
+da.otus <- subset(results, pvalue < 0.05) ## significant otus
+dim(da.otus)
+
+da.otus=cbind(as(da.otus,"data.frame"),
+              as(otu_table(phy_seq1)[rownames(da.otus),],"matrix"))
+
+tax.otus=cbind(as(da.otus,"data.frame"),
+               as(tax_table(phy_seq1)[rownames(da.otus),],"matrix"))
+
+
+pvalue_otumat <- as.matrix(tax.otus[,7:64])
+pvalue_taxmat <- as.matrix(tax.otus[,65:71])
+pvalue_samplesdf<-samplesdf
+samples1 <- sample_data(samples_df)
+
+OTU1 = otu_table(pvalue_otumat, taxa_are_rows = TRUE)
+TAX1 = tax_table(pvalue_taxmat)
+
+phylo_seq <- phyloseq(OTU1,TAX1,samples1)
+phylo_seq 
+
+total = median(sample_sums(phylo_seq  ))
+standf = function(x, t=total) round(t * (x / sum(x)))
+physeq = transform_sample_counts(phylo_seq , standf)
+
+```
+
+### tSNE-Plot:
+```{r,results='hide',warning=FALSE,fig.show='hide',,message=FALSE}
+df1<-data.frame(t(otu_table(phylo_seq)))
+c1<-data.frame(samples1$Samples,samples1$Symptoms)
+df<-data.frame(df1,c1)
+
+group_1 <- as.factor(df$samples1.Samples[1:58])
+group_2 <- as.factor(df$samples1.Symptoms[1:58])
+library(readr)
+library(Rtsne)
+library(M3C)
+
+tsne_df<-data.frame(otu_table(physeq))
+
+colnames(tsne_df)<-group_2
+
+## FIGURE 1C:    
+tsne(tsne_df,dotsize = 3,labels = as.factor(colnames(tsne_df)),
+     scale=3,colvec = c("darkgreen","orange","#99CC99"),controlscale = TRUE)
+
+```
+### Alpha Diversity:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(microbiome)
+library(ggpubr)
+library(knitr)
+library(dplyr)
+library(ggpmisc)
+
+
+tab1 <- microbiome::alpha(phylo_seq, index = c("observed","simpson","shannon","chao1"))
+ps1.meta <- meta(phylo_seq)
+ps1.meta$Shannon <- tab1$diversity_shannon 
+ps1.meta$Simpson <- tab1$dominance_simpson
+ps1.meta$Observed <- tab1$observed
+ps1.meta$Chao1 <- tab1$chao1
+
+kable(head(ps1.meta))
+summary(ps1.meta)
+
+# create a list of pairwise comaprisons
+Sampletype <- factor((ps1.meta$Samples),level=c("Infected","Control")) # get the variables
+Sampletype<-levels(Sampletype)
+
+symptoms <- factor((ps1.meta$Symptoms),level=c("Asymptomatic","Control","Symptomatic"))
+symptoms<-levels(symptoms)
+
+# make a pairwise list that we want to compare.
+sampletype.pairs <- combn(seq_along(Sampletype), 2, simplify = FALSE, FUN = function(i)Sampletype[i])
+symptoms.pairs <- combn(seq_along(symptoms), 2, simplify = FALSE, FUN = function(i)symptoms[i])
+
+
+ps1.meta %>%
+  group_by(Samples) %>%
+  dplyr::summarise(Means_Shannon=mean(Shannon),
+                   Means_Simpson = mean(Simpson),
+                   Means_Observed = mean(Observed),
+                   Means_Chao1 = mean(Chao1)
+  )
+ps1.meta %>%
+  group_by(Samples) %>%
+  dplyr::summarise(stdv_Shannon=sd(Shannon),
+                   stdv_Simpson = sd(Simpson),
+                   stdv_Observed = sd(Observed),
+                   stdv_Chao1 = sd(Chao1)
+  )
+ps1.meta %>%
+  group_by(Samples) %>%
+  dplyr::summarise(iqr_Shannon=IQR(Shannon),
+                   iqr_Simpson = IQR(Simpson),
+                   iqr_Observed = IQR(Observed),
+                   iqr_Chao1 = IQR(Chao1)
+  )
+
+ps1.meta %>%
+  group_by(Samples) %>%
+  dplyr::summarise(stdv_Shannon=median(Shannon),
+                   stdv_Simpson =median(Simpson),
+                   stdv_Observed = median(Observed),
+                   stdv_Chao1 =median(Chao1)
+  )
+
+```
+### Shannon:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+##FIGURE 2A:
+
+p1 <- ggviolin(ps1.meta, x = "Samples", y = "Shannon",add = "boxplot", fill = "Samples", palette = c("#a6cee3", "#b2df8a", "#fdbf6f"))+ 
+  stat_compare_means(method="wilcox.test",comparisons = sampletype.pairs)+geom_jitter(shape=16,position = position_jitter(0.07)) 
+print(p1)
+
+##FIGURE 2C:
+
+p_1 <- ggviolin(ps1.meta, x = "Symptoms", y = "Shannon",add = "boxplot", fill = "Symptoms", palette = c("#a6cee3", "#b2df8a", "#fdbf6f"))+
+  stat_compare_means(method="wilcox.test",comparisons = symptoms.pairs) +geom_jitter(shape=16,position = position_jitter(0.07)) 
+print(p_1)
+
+data = data.frame("total_reads" =  phyloseq::sample_sums(phylo_seq),
+                  "Shannon" = phyloseq::estimate_richness(phylo_seq, measures = "Shannon")[, 1],
+                  "Symptoms"= phylo_seq@sam_data[["Symptoms"]] )
+
+##FIGURE 2E:
+
+ggplot(data,aes(x = total_reads, y = Shannon,color=Symptoms)) +
+  geom_point(size=3) +stat_cor(data=subset(data,Symptoms=="Asymptomatic" | Symptoms=="Symptomatic"),
+                               aes(x = total_reads, y = Shannon,color=factor(Symptoms)),method="spearman",label.x = 45000)+ 
+  scale_color_manual(values = c("darkgreen","orange","#99CC99"))+
+  geom_smooth(data=subset(data,Symptoms=="Asymptomatic" | Symptoms=="Symptomatic"),
+              aes(x = total_reads, y = Shannon,color=factor(Symptoms)),formula = y ~ x,method="lm",fill = "grey56") + 
+  stat_poly_eq(data=subset(data,Symptoms=="Asymptomatic" | Symptoms=="Symptomatic"),
+               formula = y ~ x, 
+               aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+               parse = TRUE,label.x = 60000)+
+  labs(x = "\nTotal OTUs count", y = "Shannon Index\n")+theme_bw()
+
+```
+
+### Simpson:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+##FIGURE 2B:
+
+p3 <- ggviolin(ps1.meta, x = "Samples", y = "Simpson",add = "boxplot", fill = "Samples", palette = c("#a6cee3", "#b2df8a", "#fdbf6f"))+ 
+  stat_compare_means(method="wilcox.test",comparisons = sampletype.pairs)+ geom_jitter(shape=16,position = position_jitter(0.07))
+print(p3)
+
+##FIGURE 2D:
+
+p_3 <- ggviolin(ps1.meta, x = "Symptoms", y = "Simpson",add = "boxplot", fill = "Symptoms", palette = c("#a6cee3", "#b2df8a", "#fdbf6f"))+ 
+  stat_compare_means(method="wilcox.test",comparisons = symptoms.pairs) + geom_jitter(shape=16,position = position_jitter(0.07)) 
+print(p_3)
+
+data1 = data.frame("total_reads" =  phyloseq::sample_sums(phylo_seq),
+                   "Simpson" = phyloseq::estimate_richness(phylo_seq, measures = "Simpson")[, 1],
+                   "Symptoms"= phylo_seq@sam_data[["Symptoms"]] )
+
+##FIGURE 2F:
+
+ggplot(data1,aes(x = total_reads, y = Simpson,color=Symptoms)) +
+  geom_point(size=3) +
+  stat_cor(data=subset(data1,Symptoms=="Asymptomatic" | Symptoms=="Symptomatic"),
+           aes(x = total_reads, y = Simpson,color=factor(Symptoms)),method="spearman",label.x = 45000)+ 
+  scale_color_manual(values = c("darkgreen","orange","#99CC99"))+
+  geom_smooth(data=subset(data1,Symptoms=="Asymptomatic" | Symptoms=="Symptomatic"),
+              aes(x = total_reads, y = Simpson,color=factor(Symptoms)),formula = y ~ x,method="lm",fill = "grey56") +
+  stat_poly_eq(data=subset(data1,Symptoms=="Asymptomatic" | Symptoms=="Symptomatic"),
+               formula = y ~ x, 
+               aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+               parse = TRUE,label.x = 60000)+
+  labs(x = "\nTotal OTUs count", y = "Simpson Index\n")+theme_bw()
+
+
+```
+### Dysbiosis Index
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(microbiome)
+library(ggpubr)
+library(knitr)
+library(dplyr)
+set.seed(1)
+# Ordinate
+erie_pcoa <- ordinate(
+  physeq = physeq, 
+  method = "PCoA", 
+  distance = "bray",
+)
+
+
+plot_ordination(
+  physeq = physeq,
+  ordination = erie_pcoa,
+  color = "Samples",
+  shape="Samples",
+  title = "PCoA graph"
+) + scale_color_manual(values = c("orange","darkgreen")
+) + 
+  geom_point(aes(color=Samples,shape = Samples), size =2)+
+  theme_classic() 
+
+
+df<-data.frame(erie_pcoa$vectors)
+clr_dist_matrix <- vegdist(df, method = "euclidean")
+clr_dist<-as.matrix(clr_dist_matrix)
+clr_dist<-data.frame(clr_dist)
+ord.meta <- data.frame(sample_data(physeq))
+
+#ADONIS test
+a <- vegan::adonis2(clr_dist_matrix ~ sample_data(physeq)$Samples)
+print(a)
+
+dispr <- vegan::betadisper(clr_dist_matrix, sample_data(physeq)$Samples)
+dispr
+
+dispr1 <- vegan::betadisper(clr_dist_matrix,  sample_data(physeq)$Symptoms)
+dispr1
+
+## FIGURE S1-A-B:
+plot(dispr, main = "Ordination Centroids and Dispersion Labeled ",sub = "",label = "TRUE",label.cex =0.6)
+plot(dispr1, main = "Ordination Centroids and Dispersion Labeled ", sub = "",label = "TRUE",label.cex =0.5,face="bold")
+
+
+# Calculate distance matrices
+set.seed(1)
+bc.envfit.pcoa <- envfit(erie_pcoa$vectors[,1:2] ~ Samples,
+                         data = ord.meta,
+                         display = 'sites',
+                         na.rm = T)
+bc.envfit.pcoa
+
+bc.envfit.pcoa1 <- envfit(erie_pcoa$vectors[,1:2] ~ Symptoms,
+                          data = ord.meta,
+                          display = 'sites',
+                          na.rm = T)
+bc.envfit.pcoa1
+
+pcoa.df<-data.frame(erie_pcoa$vectors[,1:2])
+centroid<-bc.envfit.pcoa$factors$centroids[1,]
+
+
+dist<-data.frame(apply(pcoa.df,1,function(x,centroid){(sqrt((x[1]-centroid[1])^2+(x[2]-centroid[2])^2))},centroid))
+head(dist)
+set.seed(1)
+d1<-ord.meta[,4:5]
+df<-cbind(dist,d1)
+colnames(df)<-c("DysbiosisIndex","Samples","Symptoms")
+colnames(df)
+head(df)
+
+# create a list of pairwise comaprisons
+Sampletype <- factor((df$Samples),level=c("Infected","Control")) # get the variables
+Sampletype<-levels(Sampletype)
+symptoms <- factor((df$Symptoms),level=c("Asymptomatic","Control","Symptomatic"))
+symptoms<-levels(symptoms)
+
+
+# make a pairwise list that we want to compare.
+sampletype.pairs <- combn(seq_along(Sampletype), 2, simplify = FALSE, FUN = function(i)Sampletype[i])
+symptoms.pairs <- combn(seq_along(symptoms), 2, simplify = FALSE, FUN = function(i)symptoms[i])
+
+set.seed(1)
+
+## FIGURE S1-C
+D1 <- ggviolin(df, x = "Samples", y = "DysbiosisIndex",add = "boxplot", fill = "Samples", palette = c( "#a6cee3","#b2df8a"))+
+  stat_compare_means(method="wilcox.test",comparisons = sampletype.pairs) + geom_jitter(shape=16,position = position_jitter(0.07)) 
+print(D1)
+
+##FIGURE 2H:
+
+D_1 <- ggviolin(df, x = "Symptoms", y = "DysbiosisIndex",add = "boxplot", fill = "Symptoms", palette = c("#a6cee3", "#b2df8a", "#fdbf6f"))+
+  stat_compare_means(method="wilcox.test",comparisons = symptoms.pairs) + geom_jitter(shape=16,position = position_jitter(0.07)) 
+print(D_1)
+
+
+kruskal.test(df$DysbiosisIndex ~ df$Symptoms, data = df)
+
+```
+### Beta Diversity:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(ape)
+random_tree=rtree(ntaxa(phylo_seq),rooted = TRUE,tip.label=taxa_names(phylo_seq))
+random_tree
+physeq1=merge_phyloseq(phylo_seq,pvalue_samplesdf,random_tree)
+physeq1
+#write.tree(random_tree,file = 'D:/Project/nasopharyngeal_microbiome_analysis/phylo_tree.tre')
+
+ps_rel_otu <- data.frame(phyloseq::otu_table(physeq1))
+ps_rel_otu <- t(ps_rel_otu)
+
+## FIGURE 2G:
+wUF.ordu = ordinate(physeq1, method="PCoA", distance="unifrac", weighted=TRUE)
+
+plot_ordination(physeq1, wUF.ordu, type="sites", color="Symptoms",shape="Symptoms") + 
+  scale_colour_manual(values=c("Asymptomatic"="darkgreen","Control"="orange","Symptomatic"="#99CC99")) + 
+  scale_shape_manual(values=c(15, 16, 17))+
+  theme_bw() + geom_point(size = 3)+
+  ggtitle("Weighted UniFrac")
+
+#Calculate distance and save as a matrix
+UN.dist1=vegdist(t(pvalue_otumat), distance="unifrac",weighted=TRUE)
+
+#Run PERMANOVA on distances.
+adonis2(UN.dist1 ~ Samples+Symptoms, data = samplesdf)
+
+uwUF.ordu = ordinate(physeq1, method="PCoA", distance="unifrac", weighted=FALSE)
+
+
+plot_ordination(physeq1, uwUF.ordu, type="sites", color="Symptoms",shape="Symptoms") + 
+  scale_colour_manual(values=c("Asymptomatic"="darkgreen", "Control"="orange", "Symptomatic"="#99CC99")) + 
+  scale_shape_manual(values=c(15, 16, 17))+
+  theme_bw() + geom_point(size = 3)+
+  ggtitle("Unweighted UniFrac")
+
+#Calculate distance and save as a matrix
+UN.dist=vegdist(t(pvalue_otumat), distance="unifrac",weighted=FALSE)
+
+#Run PERMANOVA on distances.
+adonis2(UN.dist ~ Samples+Symptoms, data = samplesdf)
+
+```
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+colors <- c(
+  "#CBD588", "#5F7FC7", "orange","#CCCCCC", "#508578", "#CCCC00","#25BA70","#1A3FB9","#AD6F3B", "#673770",
+  "#D14285", "#652926", "#FF6666","#9EB91A","#CC0099","#FFCCFF","#8569D5", "#5E738F","#D1A33D", "#8A7C64",
+  "#599861","#FFFFCC","#CC0000","#000033","#CCFF00","#D55E99","#7FFFD4","#FF9999","#E69F00", "#56B4E9",
+  "#009E73", "#F0E442", "#0072B2","#000080", "#CC79A7","red","blue","#FF99CC","#FFDB6D","#C4961A",
+  "#00AFBB","cyan","magenta","darkgreen","steelblue","yellow","purple","plum","pink","lightblue1","tan",
+  "violet","khaki", "yellow4","peru"
+)
+rank_names(phylo_seq)
+```
+## Phylum
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_phylum <- phyloseq::tax_glom(physeq1, "Phylum")
+phylum_otus<-data.frame(ps_phylum@otu_table)
+
+
+library(vegan)
+set.seed(1)
+phyl1<-samples_df
+phyl2<-data.frame(t(phylum_otus))
+phylum<-data.frame(phyl1,phyl2)
+head(phylum)
+Phylum_dist<-vegdist(phylum[6:17], distance = "bray")
+phylum_nmds2 = metaMDS(phylum[6:17], distance = "bray")
+
+
+gr.moi <- factor(phylum$Symptoms)
+col.gr <- c(  "#99CC99","orange","darkgreen")
+
+#FIGURE 3A-PHYLUM:
+p1<-ordiplot(phylum_nmds2,type="none")
+points(phylum_nmds2,"sites",pch= 21,col = col.gr[gr.moi],
+       bg=col.gr[gr.moi],cex=1.6)
+#points(phylum_nmds2,"species",pch=17,col="black",cex=1.2)
+
+ano1 = anosim(Phylum_dist, phylum$Samples, distance = "bray",permutations = 9999)
+
+erie_All_phylum<-phylo_seq %>%
+  tax_glom(taxrank = "Phylum") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  arrange(Phylum)
+head(erie_All_phylum)
+
+#FIGURE S2-A (Phylum):
+#Plot
+ggplot(erie_All_phylum, aes(x=Sample, y=Abundance,fill=Phylum))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle("Phylum Composition")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  labs(x="Sample",y="Relative Abundance")+
+  facet_wrap(~ Symptoms, scales = "free")
+```
+### Wilcoxon_Phylum:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_phylum <- phyloseq::tax_glom(physeq1, "Phylum")
+phyloseq::taxa_names(ps_phylum) <- phyloseq::tax_table(ps_phylum)[, "Phylum"]
+phyloseq::otu_table(ps_phylum)
+
+physeq_phylum = transform_sample_counts(ps_phylum , (function(x) {x/sum(x)}))
+physeq_phylum 
+
+#Generate data.frame with OTUs and metadata
+ps_wilcoxon <- data.frame(t(data.frame(otu_table(physeq_phylum ))))
+ps_wilcoxon$Samples <- phyloseq::sample_data(physeq_phylum)$Samples
+
+#Define functions to pass to map
+#
+wilcoxon_model <- function(df){
+  wilcox.test(abund ~ Samples, data = df)
+}
+
+wilcoxon_pval <- function(df){
+  wilcox.test(abund ~ Samples, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+wilcoxon_results <- ps_wilcoxon %>%
+  gather(key = taxaID, value = abund,-Samples) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(wilcoxon_test = map(data, wilcoxon_model),
+         p_value = map(data, wilcoxon_pval))                       
+#Show results
+wilcoxon_results
+
+head(wilcoxon_results$data[[1]])
+
+wilcoxon_results$wilcoxon_test[[1]]
+
+
+wilcoxon_results$p_value[[1]]
+
+#Unnesting
+wilcoxon_results <- wilcoxon_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+wilcoxon_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_phylum ))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+wilcoxon_results <- wilcoxon_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(wilcoxon_results) 
+
+```
+### Kruskal_Phylum:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+physeq_phylum = transform_sample_counts(ps_phylum , (function(x) {x/sum(x)}))
+
+#Generate data.frame with OTUs and metadata
+ps_kruskal <- data.frame(t(data.frame(otu_table(physeq_phylum ))))
+ps_kruskal$Symptoms <- phyloseq::sample_data(physeq_phylum)$Symptoms
+#Define functions to pass to map
+#
+kruskal_model <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)
+}
+
+kruskal_pval <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+kruskal_results <- ps_kruskal %>%
+  gather(key = taxaID, value = abund,-Symptoms) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(kruskal_test = map(data, kruskal_model),
+         p_value = map(data, kruskal_pval))                       
+#Show results
+kruskal_results
+
+head(kruskal_results$data[[1]])
+
+kruskal_results$kruskal_test[[1]]
+
+
+kruskal_results$p_value[[1]]
+
+#Unnesting
+kruskal_results <- kruskal_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+kruskal_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_phylum ))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+kruskal_results <- kruskal_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(kruskal_results) 
+```
+### Phylum correlation heatmap and density:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_phylum <- phyloseq::tax_glom(physeq1, "Phylum")
+phyloseq::taxa_names(ps_phylum) <- phyloseq::tax_table(ps_phylum)[, "Phylum"]
+
+phylum_otus<-data.frame(ps_phylum@otu_table)
+
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+macolor = colorRampPalette(c("navyblue","white","orange"))(100)
+corr_phylum_otus <- rcorr(as.matrix(phylum_otus),type ="spearman" )
+
+
+Phylum_Corr<-data.frame(flattenCorrMatrix(corr_phylum_otus$r, corr_phylum_otus$P))
+
+
+M <- corr_phylum_otus$r
+str(M)
+p_mat <- corr_phylum_otus$P
+row_names <- rownames(M)
+head(M)
+
+df<-data.frame(samples_df$Symptoms)
+rownames(df)=colnames(M)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+## FIGURE S3-A (PHYLUM):
+phylumpheatmap <- pheatmap(M, color = rev(macolor), 
+                           clustering_method = "complete", annotation_col =df,annotation_colors = annoCol,
+                           fontsize_row = 8, fontsize_col = 8,show_colnames =TRUE,show_rownames = TRUE)
+
+
+
+
+```
+### Phylum Density: 
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(plyr)
+phylum_density<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/Phylum_correlation.csv")
+mu <- ddply(phylum_density, "Samples", summarise, grp.mean=mean(cor))
+head(mu)
+mu1 <- ddply(phylum_density, "Samples", summarise, grp.median=median(cor))
+head(mu1)
+
+
+## FIGURE 3B-PHYLUM:
+p<-ggplot(phylum_density, aes(x=cor, fill=Samples)) +
+  geom_density(alpha=0.4)+theme_classic()+xlim(0.5,1)
+print(p)
+p+geom_vline(data=mu, aes(xintercept=grp.mean, color=Samples),
+             linetype="dashed")
+
+Asym<-phylum_density$cor[1:600]
+control<-phylum_density$cor[601:666]
+Sym<-phylum_density$cor[667:1653]
+
+ks.test(control,Asym)
+ks.test(control,Sym)
+ks.test(Asym,Sym)
+
+```
+## Order
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_order <- phyloseq::tax_glom(physeq1, "Order")
+orderotus<-data.frame(ps_order@otu_table)
+
+set.seed(123)
+ord1<-samples_df
+ord2<-data.frame(t(orderotus))
+order<-data.frame(ord1,ord2)
+order_dist<-vegdist(order[6:70], distance = "bray")
+order_nmds2 = metaMDS(order[6:70], distance = "bray")
+
+## FIGURE 3A-ORDER:
+p1<-ordiplot(order_nmds2,type="none")
+points(order_nmds2,"sites",pch=21,col = col.gr[gr.moi],
+       bg=col.gr[gr.moi],cex=1.6)
+#points(order_nmds2,"species",pch=17,col="black",cex=1.2)
+
+ano2 = anosim(order_dist, order$Samples, distance = "bray", permutations = 9999)
+
+
+erie_All_order<-phylo_seq %>%
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  arrange(Order)
+head(erie_All_order)
+
+erie_order<-phylo_seq %>%
+  tax_glom(taxrank = "Order") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  filter(Abundance>0.02) %>%
+  arrange(Order)
+head(erie_order)
+
+
+#Plot
+ggplot(erie_order, aes(x=Sample, y=Abundance,fill=Order))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle("Order Composition")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  facet_wrap(~ Symptoms, scales = "free")
+
+
+```
+### Wilcoxon_Order:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_order <- phyloseq::tax_glom(physeq1, "Order")
+
+phyloseq::taxa_names(ps_order) <- phyloseq::tax_table(ps_order)[, "Order"]
+phyloseq::otu_table(ps_order)
+
+physeq_order = transform_sample_counts(ps_order , (function(x) {x/sum(x)}))
+physeq_order 
+phyloseq::taxa_names(physeq_order ) <- phyloseq::tax_table(physeq_order )[, "Order"]
+
+#Generate data.frame with OTUs and metadata
+ps_wilcoxon <- data.frame(t(data.frame(otu_table(physeq_order ))))
+ps_wilcoxon$Samples <- phyloseq::sample_data(physeq_order)$Samples
+
+#Define functions to pass to map
+#
+wilcoxon_model <- function(df){
+  wilcox.test(abund ~ Samples, data = df)
+}
+
+wilcoxon_pval <- function(df){
+  wilcox.test(abund ~ Samples, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+wilcoxon_results <- ps_wilcoxon %>%
+  gather(key = taxaID, value = abund,-Samples) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(wilcoxon_test = map(data, wilcoxon_model),
+         p_value = map(data, wilcoxon_pval))                       
+#Show results
+wilcoxon_results
+
+head(wilcoxon_results$data[[1]])
+
+wilcoxon_results$wilcoxon_test[[1]]
+
+
+wilcoxon_results$p_value[[1]]
+
+#Unnesting
+wilcoxon_results <- wilcoxon_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+wilcoxon_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_order ))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+wilcoxon_results <- wilcoxon_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(wilcoxon_results) 
+
+```
+### Kruskal_Order: 
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+physeq_order = transform_sample_counts(ps_order , (function(x) {x/sum(x)}))
+phyloseq::taxa_names(physeq_order ) <- phyloseq::tax_table(physeq_order )[, "Order"]
+
+
+#Generate data.frame with OTUs and metadata
+ps_kruskal <- data.frame(t(data.frame(otu_table(physeq_order ))))
+ps_kruskal$Symptoms <- phyloseq::sample_data(physeq_order)$Symptoms
+
+#Define functions to pass to map
+#
+kruskal_model <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)
+}
+
+kruskal_pval <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+kruskal_results <- ps_kruskal %>%
+  gather(key = taxaID, value = abund,-Symptoms) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(kruskal_test = map(data, kruskal_model),
+         p_value = map(data, kruskal_pval))                       
+#Show results
+kruskal_results
+
+head(kruskal_results$data[[1]])
+
+kruskal_results$kruskal_test[[1]]
+
+
+kruskal_results$p_value[[1]]
+
+#Unnesting
+kruskal_results <- kruskal_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+kruskal_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_order ))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+kruskal_results <- kruskal_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(kruskal_results) 
+
+```
+### Order correlation heatmap and density:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+
+ps_order <- phyloseq::tax_glom(physeq1, "Order")
+phyloseq::taxa_names(ps_order) <- phyloseq::tax_table(ps_order)[, "Order"]
+
+
+order_otus<-data.frame(ps_order@otu_table)
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+
+macolor = colorRampPalette(c("navyblue","white","orange"))(100)
+corr_order_otus <- rcorr(as.matrix(order_otus),type ="spearman" )
+
+Order_Corr<-data.frame(flattenCorrMatrix(corr_order_otus$r, corr_order_otus$P))
+
+M <- corr_order_otus$r
+str(M)
+p_mat <- corr_phylum_otus$P
+row_names <- rownames(M)
+head(M)
+df<-data.frame(samples_df$Symptoms)
+rownames(df)=colnames(M)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+## FIGURE S3-B (ORDER):
+order_pheatmap <- pheatmap(M, color = rev(macolor), 
+                           clustering_method = 'complete', annotation_col =df,annotation_colors = annoCol,
+                           fontsize_row = 8, fontsize_col = 8,show_colnames =TRUE,show_rownames = TRUE)
+
+
+```
+### Order Density:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+order_density<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/Order_correlation.csv")
+mu <- ddply(order_density, "Samples", summarise, grp.mean=mean(cor))
+head(mu)
+mu1 <- ddply(order_density, "Samples", summarise, grp.median=median(cor))
+head(mu1)
+
+## FIGURE 3B (ORDER):
+p<-ggplot(order_density, aes(x=cor, fill=Samples)) +
+  geom_density(alpha=0.4)+theme_classic()
+p+geom_vline(data=mu, aes(xintercept=grp.mean, color=Samples),
+             linetype="dashed")
+
+
+p<-ggplot(order_density, aes(x=cor, fill=Samples)) +
+  geom_density(alpha=0.4)+theme_classic()+xlim(0.5,1)
+p+geom_vline(data=mu, aes(xintercept=grp.mean, color=Samples),
+             linetype="dashed")
+
+Asym<-order_density$cor[1:600]
+control<-order_density$cor[601:666]
+Sym<-order_density$cor[667:1653]
+
+ks.test(control,Asym)
+ks.test(control,Sym)
+ks.test(Asym,Sym)
+```
+## Family
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_family <- phyloseq::tax_glom(physeq1, "Family")
+family_otus<-data.frame(ps_family@otu_table)
+
+set.seed(123)
+fmly1<-samples_df
+fmly2<-data.frame(t(family_otus))
+family<-data.frame(fmly1,fmly2)
+
+family_dist<-vegdist(family[6:131], distance = "bray")
+family_nmds2 = metaMDS(family[6:131], distance = "bray")
+
+## FIGURE 3A-FAMILY:
+p1<-ordiplot(family_nmds2,type="none")
+points(family_nmds2,"sites",pch=21,col = col.gr[gr.moi],
+       bg=col.gr[gr.moi],cex=1.6)
+#points(family_nmds2,"species",pch=17,col="black",cex=1.2)
+
+ano3 = anosim(family_dist, family$Samples, distance = "bray", permutations = 9999)
+
+erie_family<-phylo_seq %>%
+  tax_glom(taxrank = "Family") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  filter(Abundance>0.02) %>%
+  arrange(Family)
+head(erie_family)
+
+## FIGURE S2-B(FAMILY): 
+
+#Plot
+ggplot(erie_family, aes(x=Sample, y=Abundance,fill=Family))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle("Family Composition")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  facet_wrap(~ Symptoms, scales = "free")
+
+```
+### Wilcoxon Family
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_family <- phyloseq::tax_glom(physeq1, "Family")
+
+phyloseq::taxa_names(ps_family) <- phyloseq::tax_table(ps_family)[, "Family"]
+phyloseq::otu_table(ps_family)
+
+physeq_family = transform_sample_counts(ps_family , (function(x) {x/sum(x)}))
+physeq_family
+phyloseq::taxa_names(physeq_family) <- phyloseq::tax_table(physeq_family)[, "Family"]
+
+#Generate data.frame with OTUs and metadata
+ps_wilcoxon <- data.frame(t(data.frame(otu_table(physeq_family))))
+ps_wilcoxon$Samples <- phyloseq::sample_data(physeq_family)$Samples
+
+#Define functions to pass to map
+
+wilcoxon_model <- function(df){
+  wilcox.test(abund ~ Samples, data = df)
+}
+
+wilcoxon_pval <- function(df){
+  wilcox.test(abund ~ Samples, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+wilcoxon_results <- ps_wilcoxon %>%
+  gather(key = taxaID, value = abund,-Samples) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(wilcoxon_test = map(data, wilcoxon_model),
+         p_value = map(data, wilcoxon_pval))                       
+#Show results
+wilcoxon_results
+
+head(wilcoxon_results$data[[1]])
+
+wilcoxon_results$wilcoxon_test[[1]]
+
+
+wilcoxon_results$p_value[[1]]
+
+#Unnesting
+wilcoxon_results <- wilcoxon_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+wilcoxon_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_family))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+wilcoxon_results <- wilcoxon_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(wilcoxon_results) 
+
+```
+### Kruskal_Family
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+physeq_family= transform_sample_counts(ps_family , (function(x) {x/sum(x)}))
+phyloseq::taxa_names(physeq_family) <- phyloseq::tax_table(physeq_family)[, "Family"]
+
+
+#Generate data.frame with OTUs and metadata
+ps_kruskal <- data.frame(t(data.frame(otu_table(physeq_family))))
+ps_kruskal$Symptoms <- phyloseq::sample_data(physeq_family)$Symptoms
+
+#Define functions to pass to map
+#
+kruskal_model <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)
+}
+
+kruskal_pval <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+kruskal_results <- ps_kruskal %>%
+  gather(key = taxaID, value = abund,-Symptoms) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(kruskal_test = map(data, kruskal_model),
+         p_value = map(data, kruskal_pval))                       
+#Show results
+kruskal_results
+
+head(kruskal_results$data[[1]])
+
+kruskal_results$kruskal_test[[1]]
+
+
+kruskal_results$p_value[[1]]
+
+#Unnesting
+kruskal_results <- kruskal_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+kruskal_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_family))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+kruskal_results <- kruskal_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(kruskal_results) 
+
+```
+### family  correlation heatmap and densitty:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_family <- phyloseq::tax_glom(physeq1, "Family")
+phyloseq::taxa_names(ps_family) <- phyloseq::tax_table(ps_family)[, "Family"]
+
+family_otus<-data.frame(ps_family@otu_table)
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+
+macolor = colorRampPalette(c("navyblue","white","orange"))(100)
+corr_family_otus <- rcorr(as.matrix(family_otus),type ="spearman" )
+
+family_Corr<-data.frame(flattenCorrMatrix(corr_family_otus$r, corr_family_otus$P))
+
+M <- corr_family_otus$r
+str(M)
+p_mat <- corr_family_otus$P
+row_names <- rownames(M)
+head(M)
+df<-data.frame(samples_df$Symptoms)
+rownames(df)=colnames(M)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+
+## FIGURE S3-C (FAMILY):
+
+family_pheatmap <- pheatmap(M, color = rev(macolor), 
+                            clustering_method = "complete",annotation_col =df,annotation_colors = annoCol,
+                            fontsize_row = 8, fontsize_col = 8,show_colnames =TRUE,show_rownames = TRUE)
+
+```
+### Family Density:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+family_density<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/family_correlation.csv")
+mu <- ddply(family_density, "Samples", summarise, grp.mean=mean(cor))
+head(mu)
+
+mu1 <- ddply(family_density, "Samples", summarise, grp.median=median(cor))
+head(mu1)
+
+## FIGURE 3B (FAMILY):
+p<-ggplot(family_density, aes(x=cor, fill=Samples)) +
+  geom_density(alpha=0.4)+theme_classic()+xlim(0.5,1)
+print(p)
+p+geom_vline(data=mu, aes(xintercept=grp.mean, color=Samples),
+             linetype="dashed")
+
+
+Asym<-family_density$cor[1:600]
+control<-family_density$cor[601:666]
+Sym<-family_density$cor[667:1653]
+
+ks.test(control,Asym)
+ks.test(control,Sym)
+ks.test(Asym,Sym)
+```
+## Genus
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+erie_All_genus<-phylo_seq %>%
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  arrange(Genus)
+head(erie_All_genus)
+
+erie_genus<-phylo_seq %>%
+  tax_glom(taxrank = "Genus") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  filter(Abundance>0.02) %>%
+  arrange(Genus)
+head(erie_genus)
+
+#Plot
+ggplot(erie_genus, aes(x=Sample, y=Abundance,fill=Genus))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle("Genus Composition")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  facet_wrap(~ Symptoms, scales = "free")
+
+ps_genus <- phyloseq::tax_glom(physeq1, "Genus")
+genus_otus<-data.frame(ps_genus@otu_table)
+
+
+set.seed(1)
+genus1<-samples_df
+genus2<-data.frame(t(genus_otus))
+genus<-data.frame(genus1,genus2)
+
+genus_dist<-vegdist(genus[6:245], distance = "bray")
+genus_nmds2 = metaMDS(genus[6:245], distance = "bray")
+
+## FIGURE 3A (GENUS):
+p1<-ordiplot(genus_nmds2,type="none")
+points(genus_nmds2,"sites",pch=21,col = col.gr[gr.moi],
+       bg=col.gr[gr.moi],cex=1.6)
+#points(genus_nmds2,"species",pch=17,col="black",cex=1.2)
+
+ano4 = anosim(genus_dist, genus$Samples, distance = "bray", permutations = 9999)
+
+
+```
+### Wilcoxn_Genus:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_genus <- phyloseq::tax_glom(physeq1, "Genus")
+
+phyloseq::taxa_names(ps_genus) <- phyloseq::tax_table(ps_genus)[, "Genus"]
+
+physeq_genus= transform_sample_counts(ps_genus , (function(x) {x/sum(x)}))
+physeq_genus
+phyloseq::taxa_names(physeq_genus) <- phyloseq::tax_table(physeq_genus)[, "Genus"]
+
+
+#Generate data.frame with OTUs and metadata
+ps_wilcox <- data.frame(t(data.frame(phyloseq::otu_table(physeq_genus))))
+ps_wilcox$Samples <- phyloseq::sample_data(physeq_genus)$Samples
+#Define functions to pass to map
+#
+wilcox_model <- function(df){
+  wilcox.test(abund ~ Samples, data = df)
+}
+
+wilcox_pval <- function(df){
+  wilcox.test(abund ~ Samples, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+wilcox_results <- ps_wilcox %>%
+  gather(key = taxaID, value = abund,-Samples) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(wilcox_test = map(data, wilcox_model),
+         p_value = map(data, wilcox_pval))                       
+#Show results
+wilcox_results
+
+head(wilcox_results$data[[1]])
+
+wilcox_results$wilcox_test[[1]]
+
+
+wilcox_results$p_value[[1]]
+
+#Unnesting
+wilcox_results <- wilcox_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+wilcox_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_genus))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+wilcox_results <- wilcox_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(wilcox_results)  
+
+```
+### Kruskal_Genus:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+#Generate data.frame with OTUs and metadata
+ps_kruskal <- data.frame(t(data.frame(phyloseq::otu_table(physeq_genus))))
+
+ps_kruskal$Symptoms <- phyloseq::sample_data(physeq_genus)$Symptoms
+
+#Define functions to pass to map
+#
+kruskal_model <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)
+}
+
+kruskal_pval <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+kruskal_results <- ps_kruskal %>%
+  gather(key = taxaID, value = abund,-Symptoms) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(kruskal_test = map(data, kruskal_model),
+         p_value = map(data, kruskal_pval))                       
+#Show results
+kruskal_results
+
+head(kruskal_results$data[[1]])
+
+kruskal_results$kruskal_test[[1]]
+
+
+kruskal_results$p_value[[1]]
+
+#Unnesting
+kruskal_results <- kruskal_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+kruskal_results#Adding taxonomic labels
+taxa_info <- data.frame(tax_table(physeq_genus))
+taxa_info <- taxa_info %>% rownames_to_column(var = "taxaID")
+
+#Computing FDR corrected p-values
+kruskal_results <- kruskal_results %>%
+  full_join(taxa_info) %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(kruskal_results)  
+
+```
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_genus <- phyloseq::tax_glom(physeq1, "Genus")
+
+genus_otus<-data.frame(ps_genus@otu_table)
+
+macolor = colorRampPalette(c("navyblue","white","orange"))(100)
+corr_genus_otus <- rcorr(as.matrix(genus_otus),type ="spearman" )
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+
+genus_Corr<-data.frame(flattenCorrMatrix(corr_genus_otus$r, corr_genus_otus$P))
+
+
+M <- corr_genus_otus$r
+str(M)
+p_mat <- corr_genus_otus$P
+row_names <- rownames(M)
+head(M)
+df<-data.frame(samples_df$Symptoms)
+rownames(df)=colnames(M)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+
+## FIGURE S3-D (GENUS):
+genus_pheatmap <- pheatmap(M, color = rev(macolor), 
+                           clustering_method = "complete",annotation_col =df,annotation_colors = annoCol,
+                           fontsize_row = 8, fontsize_col = 8,show_colnames =TRUE,show_rownames = TRUE)
+
+
+
+################### GENUS_DENSITY #######################
+genus_density<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_correlation.csv")
+mu <- ddply(genus_density, "Samples", summarise, grp.mean=mean(cor))
+head(mu)
+mu1 <- ddply(genus_density, "Samples", summarise, grp.median=median(cor))
+head(mu1)
+
+## FIGURE 3B (GENUS):
+p<-ggplot(genus_density, aes(x=cor, fill=Samples)) +
+  geom_density(alpha=0.4)+theme_classic()+
+  xlim(0.5, 1)
+print(p)
+p+geom_vline(data=mu, aes(xintercept=grp.mean, color=Samples),
+             linetype="dashed")
+
+Asym<-genus_density$cor[1:600]
+control<-genus_density$cor[601:666]
+Sym<-genus_density$cor[667:1653]
+
+ks.test(control,Asym)
+ks.test(control,Sym)
+ks.test(Asym,Sym)
+
+```
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+macolor = colorRampPalette(c("navyblue","white","orange"))(100)
+corr_genusotus <- rcorr(as.matrix(t(genus_otus)),type ="spearman" )
+library(Hmisc)
+
+flattenCorrMatrix <- function(cormat, pmat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+  )
+}
+
+corrvalue_list<-data.frame(flattenCorrMatrix(corr_genusotus$r, corr_genusotus$P))
+
+
+M1 <- corr_genusotus$r
+str(M1)
+p_mat <- corr_genusotus$P
+p_mat
+row_names <- rownames(M1)
+head(M1)
+
+genus_pheatmap <- pheatmap(M1, color = rev(macolor),cluster_rows = TRUE,cluster_cols =TRUE,
+                           fontsize_row = 8, fontsize_col = 8,show_colnames =TRUE,show_rownames = TRUE)
+
+corrvalue <- as.data.frame(M1)
+head(corrvalue)
+
+tree_cut <- cutree(genus_pheatmap$tree_row, h =5)
+
+tc <- data.frame(tip = names(tree_cut), clust_membership = as.character(unname(tree_cut)))
+row.names(tc) <- tc$tip
+tc <- tc['clust_membership']
+head(tc)
+str(tc)
+class(tc$clust_membership)
+
+## FIGURE 3C:
+
+pheatmap(M1, color = rev(macolor),cluster_rows = TRUE,cluster_cols = TRUE,
+         fontsize = 8,
+         show_rownames = FALSE,show_colnames = FALSE,annotation_row = tc, annotation_col = tc,
+         fontsize_row = 0.8, fontsize_col = 0.8)
+
+head(tc)
+tc$clust_membership = paste('clust', tc$clust_membership, sep='_')
+head(tc)
+#write.table(tc,"D:/covid_nasal_microbiome_Project/nasal/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster.txt",row.names = TRUE,sep = "\t",col.names = TRUE,quote = FALSE)
+
+
+```
+###  Genus Cluster1:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster1<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster1.csv")
+
+row.names(genus_cluster1) <- genus_cluster1$Genus
+genus_cluster1 <- data.frame(genus_cluster1[,-1])
+genus_cluster1<- data.frame(genus_cluster1[,-1]) 
+
+df<-data.frame(pvalue_samplesdf$Symptoms)
+rownames(df)=colnames(genus_cluster1)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+#FIGURE S4 CLUSTER1:
+pheatmap::pheatmap(genus_cluster1,main="",annotation_col =df,annotation_colors = annoCol,
+                   annotation_names_col = FALSE,show_rownames = FALSE,cluster_cols = FALSE,color=colorRampPalette(c( "#FFFFCC","#000099","red" ))(50))
+
+```
+### Cluster1 CCA:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(factoextra)
+genus_cluster1_otus<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster1_otus.csv")
+genus_cluster1_taxa<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster1_taxa.csv")
+
+row.names(genus_cluster1_otus) <-genus_cluster1_otus$OTUS
+genus1_otu <- genus_cluster1_otus %>% select(-OTUS) 
+row.names(genus_cluster1_taxa) <- genus_cluster1_taxa$OTUS
+genus1_taxa <-genus_cluster1_taxa %>% select(-OTUS) 
+
+genus1otu <- as.matrix(genus1_otu)
+genus1taxa  <- as.matrix(genus1_taxa)
+
+OTU1 = otu_table(genus1otu, taxa_are_rows = TRUE)
+TAX1 = tax_table(genus1taxa)
+samples1 <- sample_data(pvalue_samplesdf)
+genus1_phyloseq <- phyloseq(OTU1,TAX1,samples1)
+genus1_phyloseq
+
+genus <- phyloseq::tax_glom(genus1_phyloseq, "Genus")
+
+clust1<-as.matrix(t(otu_table(genus)))
+
+Cluster1_CCA <- cca(clust1)
+summary(Cluster1_CCA)
+
+library(ade4)
+HIVca=dudi.coa(clust1,nf=4,scannf=FALSE)
+fviz_eig(HIVca,barfill = "#666666",addlabels = TRUE)
+
+
+pseq.cca <- ordinate(genus, "CCA")
+
+#FIGURE 3E CLUSTER1:
+p <- plot_ordination(genus, pseq.cca,
+                     type = "Sample", color = "Symptoms")
+p <- p + geom_point(size = 4)+theme_classic()
+print(p)
+
+```
+###  Genus Cluster2:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster2<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster2.csv")
+
+row.names(genus_cluster2) <- genus_cluster2$Genus
+genus_cluster2 <- data.frame(genus_cluster2[,-1])
+genus_cluster2 <- data.frame(genus_cluster2[,-1])
+
+df<-data.frame(pvalue_samplesdf$Symptoms)
+rownames(df)=colnames(genus_cluster2)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+#FIGURE S4 CLUSTER2:
+pheatmap::pheatmap(genus_cluster2,main="",annotation_col =df,annotation_colors = annoCol,
+                   annotation_names_col = FALSE,show_rownames = FALSE,cluster_cols = FALSE,color=colorRampPalette(c( "#FFFFCC","#000099","red" ))(50))
+
+```
+### Cluster2 CCA:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster2_otus<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster2_otus.csv")
+genus_cluster2_taxa<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster2_taxa.csv")
+
+row.names(genus_cluster2_otus) <-genus_cluster2_otus$OTUS
+genus2_otu <- genus_cluster2_otus %>% select(-OTUS) 
+row.names(genus_cluster2_taxa) <- genus_cluster2_taxa$OTUS
+genus2_taxa <-genus_cluster2_taxa %>% select(-OTUS) 
+
+genus2otu <- as.matrix(genus2_otu)
+genus2taxa  <- as.matrix(genus2_taxa)
+
+OTU1 = otu_table(genus2otu, taxa_are_rows = TRUE)
+TAX1 = tax_table(genus2taxa)
+samples1 <- sample_data(pvalue_samplesdf)
+genus2_phyloseq <- phyloseq(OTU1,TAX1,samples1)
+genus2_phyloseq
+genus2 <- phyloseq::tax_glom(genus2_phyloseq, "Genus")
+
+clust2<-as.matrix(t(otu_table(genus2)))
+
+Cluster2_CCA <- cca(clust2) 
+summary(Cluster2_CCA)
+
+library(ade4)
+HIVca=dudi.coa(clust2,nf=4,scannf=FALSE)
+fviz_eig(HIVca,barfill = "#666666",addlabels = TRUE)
+
+
+pseq.cca <- ordinate(genus2, "CCA")
+
+#FIGURE 3E CLUSTER2:
+p <- plot_ordination(genus2, pseq.cca,
+                     type = "Sample", color = "Symptoms")
+p <- p + geom_point(size = 4)+theme_classic()
+print(p)
+
+```
+###  Genus Cluster3:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster3<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster3.csv")
+
+row.names(genus_cluster3) <- genus_cluster3$Genus
+genus_cluster3 <- data.frame(genus_cluster3[,-1])
+genus_cluster3 <- data.frame(genus_cluster3[,-1])
+
+df<-data.frame(pvalue_samplesdf$Symptoms)
+
+rownames(df)=colnames(genus_cluster3)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+#FIGURE S4 CLUSTER3:
+pheatmap::pheatmap(genus_cluster3,main="",annotation_col =df,annotation_colors = annoCol,
+                   annotation_names_col = FALSE,show_rownames = FALSE,cluster_cols = FALSE,color=colorRampPalette(c( "#FFFFCC","#000099","red" ))(50))
+
+
+```
+### Cluster3 CCA:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster3_otus<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster3_otus.csv")
+genus_cluster3_taxa<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster3_taxa.csv")
+
+row.names(genus_cluster3_otus) <-genus_cluster3_otus$OTUS
+genus3_otu <- genus_cluster3_otus %>% select(-OTUS) 
+row.names(genus_cluster3_taxa) <- genus_cluster3_taxa$OTUS
+genus3_taxa <-genus_cluster3_taxa %>% select(-OTUS) 
+
+genus3otu <- as.matrix(genus3_otu)
+genus3taxa  <- as.matrix(genus3_taxa)
+
+OTU1 = otu_table(genus3otu, taxa_are_rows = TRUE)
+TAX1 = tax_table(genus3taxa)
+samples1 <- sample_data(pvalue_samplesdf)
+genus3_phyloseq <- phyloseq(OTU1,TAX1,samples1)
+genus3_phyloseq
+
+genus3 <- phyloseq::tax_glom(genus3_phyloseq, "Genus")
+
+
+clust3<-as.matrix(t(otu_table(genus3)))
+
+Cluster3_CCA <- cca(clust3) 
+summary(Cluster3_CCA)
+
+library(ade4)
+HIVca=dudi.coa(clust3,nf=4,scannf=FALSE)
+fviz_eig(HIVca,barfill = "#666666",addlabels = TRUE)
+
+
+pseq.cca <- ordinate(genus3, "CCA")
+#FIGURE 3E CLUSTER3:
+p <- plot_ordination(genus3, pseq.cca,
+                     type = "Sample", color = "Symptoms")
+p <- p + geom_point(size = 4)+theme_classic()
+print(p)
+
+```
+###  Genus Cluster4:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster4<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster4.csv")
+
+row.names(genus_cluster4) <- genus_cluster4$Genus
+genus_cluster4 <- data.frame(genus_cluster4[,-1])
+genus_cluster4 <- data.frame(genus_cluster4[,-1])
+
+df<-data.frame(pvalue_samplesdf$Symptoms)
+
+rownames(df)=colnames(genus_cluster4)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+#FIGURE S4 CLUSTER4:
+pheatmap::pheatmap(genus_cluster4,main="",annotation_col =df,annotation_colors = annoCol,
+                   annotation_names_col = FALSE,show_rownames = FALSE,cluster_cols = FALSE,color=colorRampPalette(c( "#FFFFCC","#000099","red" ))(50))
+
+```
+### cluster4 CCA:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster4_otus<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster4_otus.csv")
+genus_cluster4_taxa<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster4_taxa.csv")
+
+row.names(genus_cluster4_otus) <-genus_cluster4_otus$OTUS
+genus4_otu <- genus_cluster4_otus %>% select(-OTUS) 
+row.names(genus_cluster4_taxa) <- genus_cluster4_taxa$OTUS
+genus4_taxa <-genus_cluster4_taxa %>% select(-OTUS) 
+
+genus4otu <- as.matrix(genus4_otu)
+genus4taxa  <- as.matrix(genus4_taxa)
+
+OTU1 = otu_table(genus4otu, taxa_are_rows = TRUE)
+TAX1 = tax_table(genus4taxa)
+samples1 <- sample_data(pvalue_samplesdf)
+genus4_phyloseq <- phyloseq(OTU1,TAX1,samples1)
+genus4_phyloseq
+
+genus4 <- phyloseq::tax_glom(genus4_phyloseq, "Genus")
+
+
+clust4<-as.matrix(t(otu_table(genus4)))
+
+Cluster4_CCA <- cca(clust4)
+summary(Cluster4_CCA)
+
+library(ade4)
+HIVca=dudi.coa(clust4,nf=4,scannf=FALSE)
+fviz_eig(HIVca,barfill = "#666666",addlabels = TRUE)
+
+
+pseq.cca <- ordinate(genus4, "CCA")
+
+#FIGURE 3E CLUSTER4:
+
+p <- plot_ordination(genus4, pseq.cca,
+                     type = "Sample", color = "Symptoms")
+p <- p + geom_point(size = 4)+theme_classic()
+print(p)
+
+```
+###  Genus Cluster5:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster5<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster5.csv")
+
+row.names(genus_cluster5) <- genus_cluster5$Genus
+genus_cluster5 <- data.frame(genus_cluster5[,-1])
+genus_cluster5 <- data.frame(genus_cluster5[,-1])
+
+df<-data.frame(pvalue_samplesdf$Symptoms)
+
+rownames(df)=colnames(genus_cluster5)
+colnames(df)="Symptoms"
+annoCol<-list(Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+#FIGURE S4 CLUSTER5:
+pheatmap::pheatmap(genus_cluster5,main="",annotation_col =df,annotation_colors = annoCol,
+                   annotation_names_col = FALSE,show_rownames = TRUE,cluster_cols = FALSE,color=colorRampPalette(c( "#FFFFCC","#000099","red" ))(50))
+
+```
+### Cluster5 CCA:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+genus_cluster5_otus<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster5_otus.csv")
+genus_cluster5_taxa<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/genus_cluster5_taxa.csv")
+
+row.names(genus_cluster5_otus) <-genus_cluster5_otus$OTUS
+genus5_otu <- genus_cluster5_otus %>% select(-OTUS) 
+row.names(genus_cluster5_taxa) <- genus_cluster5_taxa$OTUS
+genus5_taxa <-genus_cluster5_taxa %>% select(-OTUS) 
+
+genus5otu <- as.matrix(genus5_otu)
+genus5taxa  <- as.matrix(genus5_taxa)
+
+OTU1 = otu_table(genus5otu, taxa_are_rows = TRUE)
+TAX1 = tax_table(genus5taxa)
+samples1 <- sample_data(pvalue_samplesdf)
+genus5_phyloseq <- phyloseq(OTU1,TAX1,samples1)
+genus5_phyloseq
+
+genus5 <- phyloseq::tax_glom(genus5_phyloseq, "Genus")
+
+clust5<-as.matrix(t(otu_table(genus5)))
+
+Cluster5_CCA <- cca(clust5) 
+summary(Cluster5_CCA)
+
+library(ade4)
+HIVca=dudi.coa(clust5,nf=4,scannf=FALSE)
+fviz_eig(HIVca,barfill = "#666666",addlabels = TRUE)
+
+
+pseq.cca <- ordinate(genus5, "CCA")
+#FIGURE 3E CLUSTER5:
+p <- plot_ordination(genus5, pseq.cca,
+                     type = "Sample", color = "Symptoms")
+p <- p + geom_point(size = 4)+theme_classic()
+print(p)
+
+```
+## Species
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+ps_species <- phyloseq::tax_glom(physeq1, "Species")
+species_otus<-data.frame(ps_species@otu_table)
+
+set.seed(1)
+species1<-samples_df
+species2<-data.frame(t(species_otus))
+species<-data.frame(species1,species2)
+
+species_dist<-vegdist(species[6:620], distance = "bray")
+species_nmds2 = metaMDS(species[6:620], distance = "bray")
+
+
+p1<-ordiplot(species_nmds2,type="none")
+points(species_nmds2,"sites",pch=21,col = col.gr[gr.moi],
+       bg=col.gr[gr.moi],cex=1.6)
+#points(species_nmds2,"species",pch=17,col="black",cex=1.2)
+
+ano5 = anosim(species_dist, species$Samples, distance = "bray", permutations = 9999)
+
+
+erie_All_Species<-phylo_seq %>%
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  arrange(Species)
+head(erie_All_Species)
+
+erie_Species<-phylo_seq %>%
+  tax_glom(taxrank = "Species") %>% 
+  transform_sample_counts(function(x) {x/sum(x)}) %>%
+  psmelt() %>%
+  filter(Abundance>0.02) %>%
+  arrange(Species)
+head(erie_Species)
+
+```
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(ComplexHeatmap)
+LDA_genus_otus <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Correlation/classcorrelation/4cluster_merge.csv")
+
+row.names(LDA_genus_otus) <- LDA_genus_otus$Genus
+LDA_genus_otus <- LDA_genus_otus %>% select(-Genus) 
+LDA_genus_otus<-as.matrix(LDA_genus_otus)
+df<-data.frame(pvalue_samplesdf$Symptoms)
+
+rownames(df)=colnames(LDA_genus_otus)
+annoCol<-list(pvalue_samplesdf.Symptoms=c( Control="#CC6633",Symptomatic="#99CC99",Asymptomatic="darkgreen"))
+
+library(ComplexHeatmap)
+library(circlize)
+col_fun = colorRamp2(c(0,0.07, 0.15), c("white","navyblue","red"))
+
+labRow <- c("Mycoplasma","Sporolactobacillus","Sphaerobacter","Mobiluncus","Thermoactinomyces","Microbispora","Pimelobacter",	
+            "Aeromicrobium","Streptosporangium","Thermomonospora","Enterobacter","Pantoea","Citrobacter","Erwinia","Planomonospora",	
+            "Streptoalloteichus","Alcaligenes","Kingella","Curtobacterium","Thermomicrobium","Shimwellia","Polaribacter","Ochrobactrum",
+            "Beijerinckia","Dickeya","Acidocella","Zymomonas","Pectobacterium","Acidiphilium","Eikenella","Bordetella","Chromobacterium",	
+            "Escherichia","Rothia","Iodobacter","Pseudescherichia","Anaeroplasma","Hafnia","Klebsiella","Atlantibacter","Streptomyces",	
+            "Dermatophilus","Microtetraspora","Actinoplanes","Micromonospora","Actinomadura","Kluyvera","Providencia","Proteus","Nocardioides",
+            "Kitasatospora","Saccharomonospora","Rhodococcus","Frankia", "Nocardia","Xenorhabdus","Morganella","Raoultella","Salmonella","Nocardiopsis",
+            "Saccharopolyspora","Geodermatophilus","Actinopolyspora","Amycolatopsis","Pseudonocardia","Actinokineospora","Serratia","Edwardsiella",	
+            "Shigella","Mycolicibacillus","Aeromonas","Arsenophonus","Yersinia",	"Mycolicibacterium","Mycolicibacter","Photobacterium",
+            "Grimontia","Mycobacterium","Mycobacteroides","Orientia","Gallibacterium","Cellulosimicrobium","Oerskovia")
+
+#labRow <- c("Mycoplasma","Streptosporangium","Citrobacter","Acidocella","Mycolicibacterium","Mycolicibacillus",
+#            "Mycobacterium","Mycobacteroides","Orientia","Gallibacterium","Cellulosimicrobium","Oerskovia")
+
+
+hmap<-Heatmap(LDA_genus_otus,cluster_rows = FALSE,cluster_columns = FALSE,col=col_fun)
+
+subset = match(labRow,rownames(LDA_genus_otus))
+
+labels = rownames(LDA_genus_otus)[c(subset)]
+
+RowAnn <- rowAnnotation(link = anno_mark(at = subset,labels = labels,link_height =0.1))
+
+ra <- rowAnnotation(link = anno_mark(at = subset, labels = labels),link_height =0.1, width = unit(0.2, "cm") +
+                      max_text_width(labels))
+ra
+hmap+RowAnn
+
+
+
+ha = rowAnnotation(link = anno_mark(at = subset,labels = labels))
+ra=rowAnnotation(link = anno_text(labels,gp = gpar(fontsize = 6)))
+anno<-ha+ra
+
+
+## FIGURE 4A:
+hmap<-Heatmap(LDA_genus_otus, cluster_rows = FALSE,cluster_columns = FALSE,col=col_fun,
+              row_names_side = "left", row_names_gp = gpar(fontsize = 4))
+
+#pdf(file = "D:/covid_nasal_microbiome_Project/nasal/nasopharyngeal_microbiome_analysis/FinalFigures/clusters_lda_heatmap.pdf",height = 25,width=15)
+#draw(hmap+ha)
+#dev.off()
+
+```
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+LDA_genus_rel_otus <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/LDA/Genus Custer LDA/LDA_all_all_relativeotus.csv")
+
+color<-c("#8828B8","#2886B8","#B8AF28")
+
+
+## FIGURE 4D :
+df.mean = LDA_genus_rel_otus %>% 
+  group_by(Symptoms) %>% 
+  mutate(ymean = mean(Mycoplasma))
+df.median = LDA_genus_rel_otus %>% 
+  group_by(Symptoms) %>% 
+  mutate(ymedian = median(Mycoplasma))
+
+#Plot
+ggplot(LDA_genus_rel_otus, aes(x=Samples, y=Mycoplasma,fill=Symptoms))+
+  geom_bar(stat="identity",position = "stack")+scale_fill_manual(values=color)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  ggtitle("Mycoplasma")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  geom_errorbar(data=df.mean, aes(Samples, ymax = ymean, ymin = ymean),
+                size=0.5, linetype = "solid", inherit.aes = F, width = 1)+
+  geom_errorbar(data=df.median, aes(Samples, ymax = ymedian , ymin = ymedian ),
+                size=0.5, linetype = "dotted", inherit.aes = F, width = 1)
+
+################################ (12)
+
+df.mean = LDA_genus_rel_otus %>% 
+  group_by(Symptoms) %>% 
+  mutate(ymean = mean(Acidocella))
+df.median = LDA_genus_rel_otus %>% 
+  group_by(Symptoms) %>% 
+  mutate(ymedian = median(Acidocella))
+
+#Plot
+ggplot(LDA_genus_rel_otus, aes(x=Samples, y=Acidocella,fill=Symptoms))+
+  geom_bar(stat="identity",position = "stack")+scale_fill_manual(values=color)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  ggtitle("Acidocella")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  geom_errorbar(data=df.mean, aes(Samples, ymax = ymean, ymin = ymean),
+                size=0.5, linetype = "solid", inherit.aes = F, width = 1)+
+  geom_errorbar(data=df.median, aes(Samples, ymax = ymedian , ymin = ymedian ),
+                size=0.5, linetype = "dotted", inherit.aes = F, width = 1)
+
+```
+
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+Lda_oneall <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/lda_barplot.csv")
+Asymptomatic <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Asymptomatic_lda_bar.csv")
+Symptomatic <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/Symptomatic_lda_bar.csv")
+control <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/control_lda_bar.csv")
+
+## FIGURE S6-D:
+
+#Plot
+ggplot(Asymptomatic, aes(x=Sample, y=Abundance,fill=Genus))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle(" ")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  facet_wrap(~ Symptoms, scales = "free")
+
+## FIGURE S6-C:
+#Plot
+ggplot(Symptomatic, aes(x=Sample, y=Abundance,fill=Genus))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle(" ")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  facet_wrap(~ Symptoms, scales = "free")
+
+## FIGURE S6-B:
+
+ggplot(control, aes(x=Sample, y=Abundance,fill=Genus))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=colors)+
+  theme(axis.title.x=element_blank())+
+  guides(fill=guide_legend(reverse=TRUE, keywidth=1,keyheight = 1))+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  ggtitle(" ")+theme_classic()+theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  theme(axis.text=element_text(size=12,face="bold"),axis.title=element_text(size=12,face="bold"))+
+  facet_wrap(~ Symptoms, scales = "free")
+
+
+```
+### WGCNA  Network:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(GO.db)
+library(WGCNA)
+library(magrittr)
+library(microeco)
+library(dplyr)
+LDA_otus<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/LDA/Genus Custer LDA/LDA_all_all_otus.csv")
+LDA_taxa<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/LDA/Genus Custer LDA/LDA_all_all_taxa.csv")
+
+samples_df <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/modifiedname_meta.csv")
+
+
+row.names(LDA_otus) <- LDA_otus$OTUs
+siggenusotus <- LDA_otus %>% dplyr::select(-OTUs) 
+row.names(LDA_taxa) <- LDA_taxa $OTUs
+siggenustaxa <- LDA_taxa %>% dplyr::select(-OTUs) 
+row.names(samples_df) <- samples_df$Sample
+samplesdf <- samples_df %>% dplyr::select(-Sample) 
+
+siggenusotus <- as.matrix(siggenusotus)
+siggenustaxa<- as.matrix(siggenustaxa )
+
+OTU = otu_table(siggenusotus, taxa_are_rows = TRUE)
+TAX = tax_table(siggenustaxa)
+samples <- sample_data(samplesdf)
+sig_genus_phyloseq <- phyloseq(OTU,TAX,samples)
+sig_genus_phyloseq 
+
+
+
+library(ape)
+
+gen_phy_tree=rtree(ntaxa(sig_genus_phyloseq),rooted = TRUE,tip.label=taxa_names(sig_genus_phyloseq))
+gen_phy_tree
+
+gen_physeq1=merge_phyloseq(sig_genus_phyloseq,samplesdf,gen_phy_tree)
+gen_physeq1
+
+
+library(magrittr)
+# set.seed is used to fix the random number generation to make the results repeatable
+set.seed(123)
+# make the plotting background same with the tutorial
+library(ggplot2)
+theme_set(theme_bw())
+#class(otu_mat)
+
+# In R6 class, '$new' is the original method used to create a new object of class
+geuns_dataset <- microtable$new(sample_table = samples_df, otu_table =siggenusotus, tax_table = siggenustaxa, phylo_tree =gen_phy_tree)
+class(geuns_dataset)
+print(geuns_dataset)
+
+geuns_dataset$cal_abund()
+
+# Use R base cor.test, slow
+#t2 <- trans_network$new(dataset = geuns_dataset, cal_cor = "base", taxa_level = "OTU", filter_thres = 0.0001, cor_method = "spearman")
+# return t1$res_cor_p list; one table: correlation; another: p value
+
+# When the OTU number is large, use R WGCNA package to replace R base to calculate correlations
+# require WGCNA package
+t2 <- trans_network$new(dataset = geuns_dataset, cal_cor = "WGCNA", taxa_level = "OTU", filter_thres = 0.0001, cor_method = "spearman")
+# construct network; require igraph package
+t2$cal_network(p_thres = 0.01, COR_optimization = TRUE)
+# return t1$res_network
+
+net<-t2$res_network
+# use arbitrary coefficient threshold to construct network
+t2$cal_network(p_thres = 0.01, COR_cut = 0.5)
+
+# add modules in the network
+t2$cal_module()
+
+# save network
+# open the gexf file using Gephi(https://gephi.org/)
+# require rgexf package
+library(rgexf)
+#t2$save_network(filepath = "D:/covid_nasal_microbiome_Project/nasal/nasopharyngeal_microbiome_analysis/Network/wgcna_lda_network_.gexf")
+
+```
+### ROC-AUC
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+LDA_genus_rel_otus <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/LDA/Genus Custer LDA/LDA_all_all_relativeotus.csv")
+
+
+sympasymptomatic<-data.frame(LDA_genus_rel_otus[13:58,2:14])
+sympasymptomatic$Symptoms <- as.factor(sympasymptomatic$Symptoms)
+sympasymptomatic<-sympasymptomatic%>% 
+  mutate(Symptoms = recode(Symptoms, 
+                           "Asymptomatic" = "0",
+                           "Symptomatic" = "1"))
+
+sympasymptomatic<-data.frame(sympasymptomatic[,c(1,6:13)])
+
+##### FIGURE S7-A:
+library(pROC) 
+library(randomForest) 
+
+## fit a logistic regression to the data...
+glm.fit=glm(Symptoms~., family="binomial",sympasymptomatic)
+confint(glm.fit)
+par(pty = "s")
+roc(sympasymptomatic$Symptoms, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4)
+
+roc.info <- roc(sympasymptomatic$Symptoms, glm.fit$fitted.values, legacy.axes=TRUE)
+str(roc.info)
+
+roc.df <- data.frame(
+  tpp=roc.info$sensitivities*100, ## tpp = true positive percentage
+  fpp=(1 - roc.info$specificities)*100, ## fpp = false positive precentage
+  thresholds=roc.info$thresholds)
+
+head(roc.df)
+tail(roc.df)
+## now let's look at the thresholds between TPP 60% and 80%...
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+##  calculate the area under the curve...
+roc<-roc(sympasymptomatic$Symptoms, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4,print.auc=TRUE,ci=TRUE,main="ROC Analysis",)
+#ci(roc, of = "coords", "best")
+obj<-roc(sympasymptomatic$Symptoms, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4,print.auc=TRUE,ci=TRUE,main="ROC Analysis")
+#roc(sympasymptomatic$Symptoms, glm.fit$fitted.values, plot=TRUE, legacy.axes=TRUE, percent=TRUE,main="ROC Analysis", xlab="False Positive Percentage", ylab="True Postive Percentage", 
+#    col="#377eb8", lwd=4, print.auc=TRUE)
+obj$ci
+
+
+```
+### 12 non-significant genera ROC_AUC
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+nonsig_genus <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/revised/genus_NS_auc.csv")
+
+
+AS_genus<-data.frame(nonsig_genus[13:58,])
+AS_genus$Symptoms <- as.factor(AS_genus$Symptoms)
+AS_genus<-AS_genus%>% 
+  mutate(Symptoms = recode(Symptoms, 
+                           "Asymptomatic" = "0",
+                           "Symptomatic" = "1"))
+
+AS_genus<-data.frame(AS_genus[,c(1,6:13)])
+
+#### FIGURE S7-B:
+library(pROC) 
+library(randomForest) 
+
+## fit a logistic regression to the data...
+glm.fit=glm(Symptoms~., family="binomial",AS_genus)
+confint(glm.fit)
+par(pty = "s")
+roc(AS_genus$Symptoms, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4)
+
+roc.info <- roc(AS_genus$Symptoms, glm.fit$fitted.values, legacy.axes=TRUE)
+str(roc.info)
+
+roc.df <- data.frame(
+  tpp=roc.info$sensitivities*100, ## tpp = true positive percentage
+  fpp=(1 - roc.info$specificities)*100, ## fpp = false positive precentage
+  thresholds=roc.info$thresholds)
+
+head(roc.df)
+tail(roc.df)
+## now let's look at the thresholds between TPP 60% and 80%...
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+##  calculate the area under the curve...
+roc<-roc(AS_genus$Symptoms, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4,print.auc=TRUE,ci=TRUE,main="ROC Analysis",)
+#ci(roc, of = "coords", "best")
+obj<-roc(AS_genus$Symptoms, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4,print.auc=TRUE,ci=TRUE,main="ROC Analysis")
+#roc(AS_genus$Symptoms, glm.fit$fitted.values, plot=TRUE, legacy.axes=TRUE, percent=TRUE,main="ROC Analysis", xlab="False Positive Percentage", ylab="True Postive Percentage", 
+#    col="#377eb8", lwd=4, print.auc=TRUE)
+obj$ci
+
+```
+### Fever ROC-AUC 
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+### FIGURE S7-E:
+fever<-data.frame(LDA_genus_rel_otus[13:58,c(7:14,16)])
+fever$Fever <- as.factor(fever$Fever)
+
+library(pROC) 
+library(randomForest) 
+
+## fit a logistic regression to the data...
+glm.fit=glm(Fever~., family="binomial",fever)
+confint(glm.fit)
+
+par(pty = "s")
+roc(fever$Fever, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4)
+
+roc.info <- roc(fever$Fever, glm.fit$fitted.values, legacy.axes=TRUE)
+str(roc.info)
+
+roc.df <- data.frame(
+  tpp=roc.info$sensitivities*100, ## tpp = true positive percentage
+  fpp=(1 - roc.info$specificities)*100, ## fpp = false positive precentage
+  thresholds=roc.info$thresholds)
+
+head(roc.df)
+tail(roc.df)
+## now let's look at the thresholds between TPP 60% and 80%...
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+##  calculate the area under the curve...
+roc(fever$Fever, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4,print.auc=TRUE,ci =TRUE, main="ROC Analysis")
+#roc(fever$Fever, glm.fit$fitted.values, plot=TRUE, legacy.axes=TRUE, percent=TRUE,main="ROC Analysis", xlab="False Positive Percentage", ylab="True Postive Percentage", 
+#    col="#377eb8", lwd=4, print.auc=TRUE)
+
+```
+### Chest Pain ROC-AUC
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+## FIGURE S7-D:
+chestpain<-data.frame(LDA_genus_rel_otus[13:58,c(7:14,19)])
+chestpain$Chestpain <- as.factor(chestpain$Chestpain)
+
+library(pROC) 
+library(randomForest) 
+
+## fit a logistic regression to the data...
+glm.fit=glm(Chestpain~., family="binomial",chestpain)
+confint(glm.fit)
+par(pty = "s")
+roc(chestpain$Chestpain, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4)
+
+roc.info <- roc(chestpain$Chestpain, glm.fit$fitted.values, legacy.axes=TRUE)
+str(roc.info)
+
+roc.df <- data.frame(
+  tpp=roc.info$sensitivities*100, ## tpp = true positive percentage
+  fpp=(1 - roc.info$specificities)*100, ## fpp = false positive precentage
+  thresholds=roc.info$thresholds)
+
+head(roc.df)
+tail(roc.df)
+## now let's look at the thresholds between TPP 60% and 80%...
+roc.df[roc.df$tpp > 60 & roc.df$tpp < 80,]
+
+##  calculate the area under the curve...
+roc(chestpain$Chestpain, glm.fit$fitted.values, plot=TRUE,legacy.axes=TRUE,col="#377eb8",lwd=4,ci =TRUE,print.auc=TRUE,main="ROC Analysis")
+
+```
+### Species Heatmap: 
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+species_lda <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/specieslevel/Species_Lda_abundance.csv")
+
+## FIGURE 5A :
+p.heat4 <- ggplot(species_lda, aes(x = Sample, y = Species)) + geom_tile(aes(fill = Abundance))+
+  scale_fill_distiller("Abundance", palette = "RdYlBu") + theme_bw()+ facet_grid(~Symptoms,scales = "free_x")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) +
+  scale_x_discrete(guide = guide_axis(n.dodge=1))+
+  theme(axis.text=element_text(size=10,face="bold"),axis.title=element_text(size=12,face="bold"))
+
+print(p.heat4)
+
+
+```
+
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+
+speciesotus <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/specieslevel/species_relotus.csv")
+
+#speciesotus<-speciesotus[1:37,]
+#speciesotus<-speciesotus[13:58,]
+speciesotus<-speciesotus[c(1:12,38:58),]
+#Define functions to pass to map
+
+wilcox_model <- function(df){
+  wilcox.test(abund ~ Symptoms, data = df)
+}
+
+wilcox_pval <- function(df){
+  wilcox.test(abund ~ Symptoms, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+wilcox_results <- speciesotus %>%
+  gather(key = taxaID, value = abund,-Symptoms) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(wilcox_test = map(data, wilcox_model),
+         p_value = map(data, wilcox_pval))                       
+#Show results
+wilcox_results
+
+head(wilcox_results$data[[1]])
+
+wilcox_results$wilcox_test[[1]]
+
+
+wilcox_results$p_value[[1]]
+
+#Unnesting
+wilcox_results <- wilcox_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+
+wilcox_results#Adding taxonomic labels
+
+#Computing FDR corrected p-values
+wilcoxresults <- wilcox_results %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(wilcoxresults)  
+
+############################
+#Define functions to pass to map
+
+kruskal_model <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)
+}
+
+kruskal_pval <- function(df){
+  kruskal.test(abund ~ Symptoms, data = df)$p.value
+}
+
+#Create nested data frames by OTU and loop over each using map 
+kruskal_results <- speciesotus %>%
+  gather(key = taxaID, value = abund,-Symptoms) %>%
+  group_by(taxaID) %>%
+  nest() %>%
+  mutate(kruskal_test = map(data, kruskal_model),
+         p_value = map(data, kruskal_pval))                       
+#Show results
+kruskal_results
+
+head(kruskal_results$data[[1]])
+
+kruskal_results$kruskal_test[[1]]
+
+
+kruskal_results$p_value[[1]]
+
+#Unnesting
+kruskal_results <- kruskal_results %>%
+  dplyr::select(taxaID, p_value) %>%
+  unnest()
+kruskal_results#Adding taxonomic labels
+
+#Computing FDR corrected p-values
+kruskalresults <- kruskal_results %>%
+  arrange(p_value) %>%
+  mutate(BH_FDR = p.adjust(p_value, "BH")) %>%
+  filter(BH_FDR < 0.05) %>%
+  dplyr::select(taxaID, p_value, BH_FDR, everything()) 
+
+#Printing results
+print.data.frame(kruskalresults)  
+
+
+
+```
+### Combine Boxplot:
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+species_boxplot <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/specieslevel/species_combine.csv")
+
+## FIGURE 5B :
+ggplot(data = species_boxplot, aes(x=Species, y=Abundance)) + 
+  geom_boxplot(aes(fill=Symptoms))+ylab("Relative Abundance")+
+  scale_fill_manual(values = c("#8828B8","#2886B8","#B8AF28")) +
+     coord_flip()+
+    theme(axis.text = element_text(size=11,face="bold"))
+
+```
+### Symptoms Correlation
+```{r,results='hide',warning=FALSE,fig.show='hide',message=FALSE}
+library(tidyverse)
+library(lsr)
+library(correlation)
+library(psych)
+require(tidyverse)
+library(dplyr)
+require(rcompanion)
+
+
+dfgenus<-data.frame(LDA_genus_rel_otus[13:58,7:22])
+
+library(ggcorrplot)
+#######################
+# Calculate a pairwise association between all variables in a data-frame. In particular nominal vs nominal with Chi-square, numeric vs numeric with Pearson correlation, and nominal vs numeric with ANOVA.
+# Adopted from https://stackoverflow.com/a/52557631/590437
+is_nominal = function(x) class(x) %in% c("factor", "character")
+mixed_assoc = function(dfgenus, cor_method="spearman")
+
+# https://community.rstudio.com/t/why-is-purr-is-numeric-deprecated/3559
+# https://github.com/r-lib/rlang/issues/781
+is_numeric <- function(x) { is.integer(x) || is_double(x)}
+
+
+f = function(xName,yName) {
+  x =  pull(dfgenus, xName)
+  y =  pull(dfgenus, yName)
+  
+  result = if(is_nominal(x) && is_nominal(y)){
+    # use bias corrected cramersV as described in https://rdrr.io/cran/rcompanion/man/cramerV.html
+    cv = cramerV(as.character(x), as.character(y))
+    data.frame(xName, yName, Corr=cv, type="cramersV")
+    
+  }else if(is_numeric(x) && is_numeric(y)){
+    correlation = cor(x, y, method="spearman", use="complete.obs")
+    data.frame(xName, yName, Corr=correlation, type="correlation")
+    
+  }
+  
+  # finally add complete obs number and ratio to table
+  result %>% mutate(complete_obs_pairs=sum(!is.na(x)&!is.na(y)),complete_obs_ratio=complete_obs_pairs/length(x)) %>% rename(x=xName, y=yName)
+}
+
+#df_comb1 = expand.grid(names(dfgenus), names(dfgenus),  stringsAsFactors = F) %>% set_names("X1","X2")
+# apply function to each variable combination
+#df_res1=map2_df(df_comb1$X1, df_comb1$X2, f)
+
+
+#####################
+corr_genus_symptoms <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/specieslevel/genussymptoms_correlation.csv")
+
+library(reshape)
+dfmelt<-data.frame(melt(corr_genus_symptoms))
+colnames(dfmelt)<-c("Symptoms","Bacteria","Corr")
+library(RColorBrewer)
+
+## FIGURE S7 C:
+
+plot1<-ggplot(dfmelt, aes(Symptoms,Bacteria, fill= Corr)) + 
+  geom_tile(colour="white",size=2.5)+
+  geom_text(aes(Symptoms,Bacteria,label = Corr)) +
+  scale_fill_distiller(palette = 'Spectral')+
+  theme(axis.text.x = element_text(vjust = 0.2)) +
+  theme(axis.text=element_text(size=11,face="bold"),axis.title=element_text(size=11,face="bold"))
+
+#pdf(file = "D:/Project/nasopharyngeal_microbiome_analysis/FinalFigures/specieslevel/Genuslda_Symptoms_correlation.pdf",height = 10,width=15)
+plot1
+#dev.off()
+
+####################
+species_12_bacteria<-read.csv("D:/Project/nasopharyngeal_microbiome_analysis/specieslevel/species_13_bacteria.csv")
+
+df<-data.frame(species_12_bacteria[,-1])
+
+
+
+corr_species_symptoms <- read.csv("D:/Project/nasopharyngeal_microbiome_analysis/specieslevel/13species_association.csv")
+
+library(reshape)
+g3<-data.frame(melt(corr_species_symptoms))
+colnames(g3)<-c("Symptoms","Bacteria","Corr")
+library(RColorBrewer)
+
+## FIGURE 5C :
+plot1<-ggplot(g3, aes(Bacteria, Symptoms, fill= Corr)) + 
+  geom_tile(colour="white",size=2.5)+
+  geom_text(aes(Bacteria,Symptoms,label = Corr)) +
+  scale_fill_distiller(palette = 'Spectral')+
+  theme(axis.text.x = element_text(vjust = 0.2)) +coord_flip()+
+  theme(axis.text=element_text(size=11,face="bold"),axis.title=element_text(size=11,face="bold"))
+
+#pdf(file = "D:/Project/nasopharyngeal_microbiome_analysis/FinalFigures/specieslevel/13Species_Symptomscorrelation.pdf",height = 10,width=15)
+plot1
+#dev.off()
+
+
+```
+```{r}
+
+```
+
