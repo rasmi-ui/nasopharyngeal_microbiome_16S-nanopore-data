@@ -1,0 +1,9 @@
+Symptoms,Mycobacterium.asiaticum,Mycobacterium.avium,Mycobacterium.intracellulare,Mycobacterium.gordonae,Mycobacterium.kansasii,Mycobacterium.leprae,Mycobacterium.simiae,Mycobacterium.szulgai,Mycobacterium.tuberculosis,Mycobacterium.ulcerans,Mycobacterium.xenopi,Mycoplasma.pneumoniae,Mycoplasma.salivarium
+DryCough,2.99E-01,2.10E-01,1.79E-01,3.40E-01,1.79E-01,1.53E-01,2.64E-01,2.17E-01,2.64E-01,2.45E-01,2.58E-01,3.69E-01,3.84E-01
+Fever,3.93E-01,4.27E-01,4.11E-01,3.90E-01,4.24E-01,3.63E-01,4.06E-01,2.66E-01,4.83E-01,2.52E-01,3.88E-01,3.84E-01,3.97E-01
+Tiredness,2.75E-01,3.29E-01,1.76E-01,3.26E-01,3.67E-01,3.08E-01,3.40E-01,3.32E-01,3.49E-01,3.14E-01,3.82E-01,1.63E-01,2.06E-01
+Sorethroat,2.01E-01,3.61E-01,3.24E-01,2.11E-01,2.48E-01,3.88E-01,2.23E-01,2.40E-01,2.80E-01,2.25E-01,2.90E-01,2.45E-01,3.05E-01
+Chestpain,1.89E-01,3.74E-01,3.37E-01,3.03E-01,4.00E-01,4.20E-01,2.38E-01,1.64E-01,3.48E-01,1.18E-01,2.35E-01,2.51E-02,1.08E-01
+Bodypain,3.12E-01,3.15E-01,3.35E-01,2.38E-01,1.82E-01,2.41E-01,1.93E-01,2.48E-01,2.56E-01,2.38E-01,3.00E-01,3.37E-01,3.72E-01
+Headache,1.54E-01,9.10E-02,6.73E-02,1.78E-01,9.89E-02,1.46E-01,2.10E-01,1.78E-01,9.10E-02,1.46E-01,1.23E-01,1.27E-01,1.61E-01
+Lossofsmell.taste,2.14E-01,2.03E-01,1.92E-01,2.43E-01,2.14E-01,1.75E-01,2.65E-01,2.65E-01,2.20E-01,2.31E-01,2.03E-01,1.17E-01,1.71E-01
